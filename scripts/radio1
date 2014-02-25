@@ -1,0 +1,2 @@
+#!/bin/sh
+rtl_fm -s 192k -r 48k -p 58  -f 98100000| aplay -r 48k -f S16_LE &

@@ -5,6 +5,9 @@
  * Copyright (C) 2012 by Kyle Keen <keenerd@gmail.com>
  * Copyright (C) 2013 by Elias Oenal <EliasOenal@gmail.com>
  *
+ * UDP modifications: Original Code by Olgierd Pilarczyk
+ * Extended by Frederik Granna <rtlsdr@granna.de>
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 2 of the License, or
@@ -53,6 +56,10 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -83,6 +90,10 @@
 #define BUFFER_DUMP			4096
 
 #define FREQUENCIES_LIMIT		1000
+
+//udp
+static pthread_t socket_thread;
+static void optimal_settings(int freq, int rate);
 
 static volatile int do_exit = 0;
 static int lcm_post[17] = {1,1,1,3,1,5,3,7,1,9,5,11,3,13,7,15,1};
@@ -195,8 +206,6 @@ void usage(void)
 		"\t[-d device_index (default: 0)]\n"
 		"\t[-g tuner_gain (default: automatic)]\n"
 		"\t[-l squelch_level (default: 0/off)]\n"
-		//"\t    for fm squelch is inverted\n"
-		//"\t[-o oversampling (default: 1, 4 recommended)]\n"
 		"\t[-p ppm_error (default: 0)]\n"
 		"\t[-E enable_option (default: none)]\n"
 		"\t    use multiple -E to enable multiple options\n"
@@ -668,9 +677,9 @@ void arbitrary_upsample(int16_t *buf1, int16_t *buf2, int len1, int len2)
 	int i = 1;
 	int j = 0;
 	int tick = 0;
-	double frac;  // use integers...
+	float frac;  // division, dont use integers...
 	while (j < len2) {
-		frac = (double)tick / (double)len2;
+		frac = (float)tick / (float)len2;
 		buf2[j] = (int16_t)(buf1[i-1]*(1-frac) + buf1[i]*frac);
 		j++;
 		tick += len1;
@@ -691,15 +700,15 @@ void arbitrary_downsample(int16_t *buf1, int16_t *buf2, int len1, int len2)
 	int i = 1;
 	int j = 0;
 	int tick = 0;
-	double remainder = 0;
-	double frac;  // use integers...
+	float remainder = 0;
+	float frac;  // division, dont use integers...
 	buf2[0] = 0;
 	while (j < len2) {
 		frac = 1.0;
 		if ((tick + len2) > len1) {
-			frac = (double)(len1 - tick) / (double)len2;}
-		buf2[j] += (int16_t)((double)buf1[i] * frac + remainder);
-		remainder = (double)buf1[i] * (1.0-frac);
+			frac = (float)(len1 - tick) / (float)len2;}
+		buf2[j] += (int16_t)((float)buf1[i] * frac + remainder);
+		remainder = (float)buf1[i] * (1.0-frac);
 		tick += len2;
 		i++;
 		if (tick > len1) {
@@ -726,6 +735,94 @@ void arbitrary_resample(int16_t *buf1, int16_t *buf2, int len1, int len2)
 		arbitrary_downsample(buf1, buf2, len1, len2);
 	}
 }
+
+/*udp*/
+static unsigned int chars_to_int(unsigned char* buf) {
+
+	int i;
+	unsigned int val = 0;
+
+	for(i=1; i<5; i++) {
+		val = val | ((buf[i]) << ((i-1)*8));
+	}
+
+	return val;
+}
+
+static void *socket_thread_fn(void *arg) {
+	struct controller_state *fm = arg;
+	int port = 6020;
+  int r, n;
+  int sockfd, newsockfd, portno;
+  int new_freq, demod_type, new_squelch, new_gain, agc_mode;
+  socklen_t clilen;
+  unsigned char buffer[5];
+  struct sockaddr_in serv_addr, cli_addr;
+
+	sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (sockfd < 0) {
+  		perror("ERROR opening socket");
+	}
+	bzero((char *) &serv_addr, sizeof(serv_addr));
+
+	serv_addr.sin_family = AF_INET;
+	serv_addr.sin_addr.s_addr = INADDR_ANY;
+	serv_addr.sin_port = htons(port);
+
+	if (bind(sockfd, (struct sockaddr *) &serv_addr,  sizeof(serv_addr)) < 0) {
+		perror("ERROR on binding");
+	}
+
+	bzero(buffer,5);
+
+	fprintf (stderr, "Socket thread started: Tuning enabled on UDP/%d \n", port);
+
+	while((n = read(sockfd,buffer,5)) != 0) {
+
+		if(buffer[0] == 0) {
+			new_freq = chars_to_int(buffer);
+			optimal_settings(new_freq, 0);
+			verbose_set_frequency(dongle.dev, dongle.freq);
+		}
+
+		if(buffer[0] == 1) {
+			// exit
+			int type = chars_to_int(buffer);
+			do_exit = 1;
+			break;
+		}
+
+		if (buffer[0] == 2) {
+			new_squelch = chars_to_int(buffer);
+			//fm->squelch_level = new_squelch;
+			fprintf (stderr, "Changing squelch not supported.\n");
+		}
+
+		if (buffer[0] == 3) {
+			new_gain = chars_to_int(buffer);
+			if (new_gain == AUTO_GAIN) {
+				r = verbose_auto_gain(dongle.dev);
+			} else {
+				new_gain = nearest_gain(dongle.dev, new_gain);
+				r = verbose_gain_set(dongle.dev, new_gain);
+			}
+		}
+
+		if (buffer[0] == 4) {
+			agc_mode = chars_to_int(buffer);
+			if (agc_mode == 0 || agc_mode == 1) {
+				fprintf(stderr, "Setting AGC to %d\n", agc_mode);
+				rtlsdr_set_agc_mode(dongle.dev, agc_mode);
+			} else {
+				fprintf(stderr, "Failed to set AGC to %d\n", agc_mode);
+			}
+		}
+	}
+
+	close(sockfd);
+	return 0;
+}
+/*udp*/
 
 void full_demod(struct demod_state *d)
 {
@@ -1138,7 +1235,6 @@ int main(int argc, char **argv)
 				demod.rate_out = 170000;
 				demod.rate_out2 = 32000;
 				demod.custom_atan = 1;
-				//demod.post_downsample = 4;
 				demod.deemph = 1;
 				demod.squelch_level = 0;}
 			break;
@@ -1230,16 +1326,16 @@ int main(int argc, char **argv)
 	pthread_create(&output.thread, NULL, output_thread_fn, (void *)(&output));
 	pthread_create(&demod.thread, NULL, demod_thread_fn, (void *)(&demod));
 	pthread_create(&dongle.thread, NULL, dongle_thread_fn, (void *)(&dongle));
+//udp
+	pthread_create(&socket_thread, NULL, socket_thread_fn, (void *)(&controller));
 
 	while (!do_exit) {
 		usleep(100000);
 	}
 
-	if (do_exit) {
-		fprintf(stderr, "\nUser cancel, exiting...\n");}
-	else {
-		fprintf(stderr, "\nLibrary error %d, exiting...\n", r);}
+	fprintf(stderr, "\nRTL_FM: User cancel, exiting...\n");
 
+	pthread_cancel(socket_thread);
 	rtlsdr_cancel_async(dongle.dev);
 	pthread_join(dongle.thread, NULL);
 	safe_cond_signal(&demod.ready, &demod.ready_m);
