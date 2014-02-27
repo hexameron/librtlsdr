@@ -45,7 +45,6 @@
  *       noise squelch
  *       merge stereo patch
  *       merge soft agc patch
- *       merge udp patch
  *       testmode to detect overruns
  *       watchdog to reset bad dongle
  *       fix oversampling
@@ -82,7 +81,7 @@
 #include "rtl-sdr.h"
 #include "convenience/convenience.h"
 
-#define DEFAULT_SAMPLE_RATE		24000
+#define DEFAULT_SAMPLE_RATE		48000
 #define DEFAULT_BUF_LENGTH		(1 * 16384)
 #define MAXIMUM_OVERSAMPLE		16
 #define MAXIMUM_BUF_LENGTH		(MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
@@ -127,8 +126,6 @@ struct demod_state
 	pthread_t thread;
 	int16_t  lowpassed[MAXIMUM_BUF_LENGTH];
 	int      lp_len;
-	int16_t  lp_i_hist[10][6];
-	int16_t  lp_q_hist[10][6];
 	int16_t  result[MAXIMUM_BUF_LENGTH];
 	int16_t  droop_i_hist[9];
 	int16_t  droop_q_hist[9];
@@ -368,35 +365,25 @@ void low_pass_real(struct demod_state *s)
 	s->result_len = i2;
 }
 
-void fifth_order(int16_t *data, int length, int16_t *hist)
-/* for half of interleaved data */
+void halfsample(int16_t *data, int length)
+/* halve samplerate for one channel of interleaved I/Q data
+ * adds less bit noise to weak signals than fifth order
+ * adds 3x gain, so use 5 passes or less for 8bit samples */
 {
 	int i;
-	int16_t a, b, c, d, e, f;
-	a = hist[1];
-	b = hist[2];
-	c = hist[3];
-	d = hist[4];
-	e = hist[5];
-	f = data[0];
-	/* a downsample should improve resolution, so don't fully shift */
-	data[0] = (a + (b+e)*5 + (c+d)*10 + f) >> 4;
-	for (i=4; i<length; i+=4) {
+	int16_t a,b,c,d;
+	b = data[0];
+	c = data[2];
+	d = data[4];
+	data[0] = ((b+d)>>1) + (b+c);
+	for (i = 2; (i*2)<(length+4); i+=2) {
 		a = c;
 		b = d;
-		c = e;
-		d = f;
-		e = data[i-2];
-		f = data[i];
-		data[i/2] = (a + (b+e)*5 + (c+d)*10 + f) >> 4;
+		c = data[i*2+2];
+		d = data[i*2+4];
+		data[i] = ((a+d)>>1) + (b+c);
 	}
-	/* archive */
-	hist[0] = a;
-	hist[1] = b;
-	hist[2] = c;
-	hist[3] = d;
-	hist[4] = e;
-	hist[5] = f;
+	data[i] = ((b+d)>>1) + (c+d);
 }
 
 void generic_fir(int16_t *data, int length, int *fir, int16_t *hist)
@@ -831,8 +818,8 @@ void full_demod(struct demod_state *d)
 	ds_p = d->downsample_passes;
 	if (ds_p) {
 		for (i=0; i < ds_p; i++) {
-			fifth_order(d->lowpassed,   (d->lp_len >> i), d->lp_i_hist[i]);
-			fifth_order(d->lowpassed+1, (d->lp_len >> i) - 1, d->lp_q_hist[i]);
+			halfsample(d->lowpassed + 0, (d->lp_len >> i) - 1);
+			halfsample(d->lowpassed + 1, (d->lp_len >> i) - 1);
 		}
 		d->lp_len = d->lp_len >> ds_p;
 		/* droop compensation */
@@ -1048,19 +1035,19 @@ void dongle_init(struct dongle_state *s)
 
 void demod_init(struct demod_state *s)
 {
-	s->rate_in = DEFAULT_SAMPLE_RATE;
-	s->rate_out = DEFAULT_SAMPLE_RATE;
+	s->rate_in = 4 * DEFAULT_SAMPLE_RATE;
+	s->rate_out = 4 * DEFAULT_SAMPLE_RATE;
 	s->squelch_level = 0;
 	s->conseq_squelch = 10;
 	s->terminate_on_squelch = 0;
 	s->squelch_hits = 11;
-	s->downsample_passes = 0;
+	s->downsample_passes = 1;
 	s->comp_fir_size = 0;
 	s->prev_index = 0;
 	s->post_downsample = 1;  // once this works, default = 4
 	s->custom_atan = 0;
 	s->deemph = 0;
-	s->rate_out2 = -1;  // flag for disabled
+	s->rate_out2 = DEFAULT_SAMPLE_RATE;
 	s->mode_demod = &fm_demod;
 	s->pre_j = s->pre_r = s->now_r = s->now_j = 0;
 	s->prev_lpr_index = 0;

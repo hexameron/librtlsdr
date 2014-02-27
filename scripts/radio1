@@ -1,3 +1,4 @@
 #!/bin/sh
-# Latest version writes 48k 16bit mono header, so aplay autoconfigs to that.
-rtl_fm -s 192k -r 48k -p 58  -f 98100000| aplay &
+# This version defaults to 48k(oversampled 4x) and writes a wav header for that, so aplay can autoconfig.
+# Adjust ppm error to suit your dongle.
+rtl_fm -p 20 -f 98100000| aplay &
