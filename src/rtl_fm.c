@@ -951,7 +951,8 @@ static void optimal_settings(int freq, int rate)
 	if (!d->offset_tuning) {
 		capture_freq = freq + capture_rate/4;}
 	capture_freq += cs->edge * dm->rate_in / 2;
-	dm->output_scale = (1<<15) / (128 * dm->downsample);
+	// custom downsample scales up by 3^4, not 2^4
+	dm->output_scale = (1<<8) / (dm->downsample * 5);
 	if (dm->output_scale < 1) {
 		dm->output_scale = 1;}
 	if (dm->mode_demod == &fm_demod) {
