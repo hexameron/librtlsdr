@@ -7,7 +7,7 @@
 import socket, sys
 
 if len(sys.argv) < 2:
-	print("usage: rtlcmd [gain x|gain auto|freq x|exit]")
+	print("usage: rtlcmd [gain x|gain auto|freq x|boost x|exit]")
 	sys.exit(3)
 
 buf = ""
@@ -22,7 +22,7 @@ if mode == 'freq':
 elif mode == 'exit':
 	buf = buf + chr(1)
 	data = -1
-elif mode == 'xxxx':
+elif mode == 'boost':
   buf = buf + chr(2)
 elif mode == 'gain':
   buf = buf + chr(3)

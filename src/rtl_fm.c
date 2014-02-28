@@ -93,6 +93,7 @@
 //udp
 static pthread_t socket_thread;
 static void optimal_settings(int freq, int rate);
+static int digiboost = 1;
 
 static volatile int do_exit = 0;
 static int lcm_post[17] = {1,1,1,3,1,5,3,7,1,9,5,11,3,13,7,15,1};
@@ -196,10 +197,9 @@ void usage(void)
 		"\t    use multiple -f for scanning (requires squelch)\n"
 		"\t    ranges supported, -f 118M:137M:25k\n"
 		"\t[-M modulation (default: fm)]\n"
-		"\t    fm, wbfm, raw, am, usb, lsb\n"
-		"\t    wbfm == -M fm -s 170k -o 4 -A fast -r 32k -l 0 -E deemp\n"
+		"\t    fm, raw, am, usb, lsb\n"
 		"\t    raw mode outputs 2x16 bit IQ pairs\n"
-		"\t[-s sample_rate (default: 24k)]\n"
+		"\t[-s sample_rate (default: 192k)]\n"
 		"\t[-d device_index (default: 0)]\n"
 		"\t[-g tuner_gain (default: automatic)]\n"
 		"\t[-l squelch_level (default: 0/off)]\n"
@@ -214,24 +214,16 @@ void usage(void)
 		"\tfilename ('-' means stdout)\n"
 		"\t    omitting the filename also uses stdout\n\n"
 		"Experimental options:\n"
-		"\t[-r resample_rate (default: none / same as -s)]\n"
+		"\t[-r resample_rate (default: 48k)]\n"
 		"\t[-t squelch_delay (default: 10)]\n"
 		"\t    +values will mute/scan, -values will exit\n"
 		"\t[-F fir_size (default: off)]\n"
 		"\t    enables low-leakage downsample filter\n"
 		"\t    size can be 0 or 9.  0 has bad roll off\n"
 		"\t[-A std/fast/lut choose atan math (default: std)]\n"
-		//"\t[-C clip_path (default: off)\n"
-		//"\t (create time stamped raw clips, requires squelch)\n"
-		//"\t (path must have '\%s' and will expand to date_time_freq)\n"
-		//"\t[-H hop_fifo (default: off)\n"
-		//"\t (fifo will contain the active frequency)\n"
 		"\n"
 		"Produces signed 16 bit ints, use Sox or aplay to hear them.\n"
-		"\trtl_fm ... | play -t raw -r 24k -es -b 16 -c 1 -V1 -\n"
-		"\t           | aplay -r 24k -f S16_LE -t raw -c 1\n"
-		"\t  -M wbfm  | play -r 32k ... \n"
-		"\t  -s 22050 | multimon -t raw /dev/stdin\n\n");
+		"\trtl_fm -f 88500000| aplay\n" );
 	exit(1);
 }
 
@@ -545,12 +537,13 @@ void am_demod(struct demod_state *fm)
 	int i, pcm;
 	int16_t *lp = fm->lowpassed;
 	int16_t *r  = fm->result;
+	int16_t scale = digiboost * fm->output_scale;
 	for (i = 0; i < fm->lp_len; i += 2) {
 		// hypot uses floats but won't overflow
 		//r[i/2] = (int16_t)hypot(lp[i], lp[i+1]);
 		pcm = lp[i] * lp[i];
 		pcm += lp[i+1] * lp[i+1];
-		r[i/2] = (int16_t)sqrt(pcm) * fm->output_scale;
+		r[i/2] = scale * (int16_t)sqrt(pcm);
 	}
 	fm->result_len = fm->lp_len/2;
 	// lowpass? (3khz)  highpass?  (dc)
@@ -561,9 +554,10 @@ void usb_demod(struct demod_state *fm)
 	int i, pcm;
 	int16_t *lp = fm->lowpassed;
 	int16_t *r  = fm->result;
+	int16_t scale = digiboost * fm->output_scale;
 	for (i = 0; i < fm->lp_len; i += 2) {
 		pcm = lp[i] + lp[i+1];
-		r[i/2] = (int16_t)pcm * fm->output_scale;
+		r[i/2] = scale * pcm;
 	}
 	fm->result_len = fm->lp_len/2;
 }
@@ -573,9 +567,10 @@ void lsb_demod(struct demod_state *fm)
 	int i, pcm;
 	int16_t *lp = fm->lowpassed;
 	int16_t *r  = fm->result;
+	int16_t scale = digiboost * fm->output_scale;
 	for (i = 0; i < fm->lp_len; i += 2) {
 		pcm = lp[i] - lp[i+1];
-		r[i/2] = (int16_t)pcm * fm->output_scale;
+		r[i/2] = scale * pcm;
 	}
 	fm->result_len = fm->lp_len/2;
 }
@@ -769,7 +764,10 @@ static void *socket_thread_fn(void *arg) {
 		if(buffer[0] == 0) {
 			new_freq = chars_to_int(buffer);
 			optimal_settings(new_freq, 0);
-			verbose_set_frequency(dongle.dev, dongle.freq);
+			//verbose_set_frequency(dongle.dev, dongle.freq);
+			r = rtlsdr_set_center_freq(dongle.dev, dongle.freq);
+			if (r < 0)
+				fprintf(stderr, "WARNING: Failed to set center freq.\n");
 		}
 
 		if(buffer[0] == 1) {
@@ -780,9 +778,8 @@ static void *socket_thread_fn(void *arg) {
 		}
 
 		if (buffer[0] == 2) {
-			new_squelch = chars_to_int(buffer);
-			//fm->squelch_level = new_squelch;
-			fprintf (stderr, "Changing squelch not supported.\n");
+			digiboost = 1 + (7 & chars_to_int(buffer));
+			fprintf (stderr, "Digital boost: %dx gain.\n", digiboost);
 		}
 
 		if (buffer[0] == 3) {
@@ -989,7 +986,7 @@ static void *controller_thread_fn(void *arg)
 
 	/* Set the sample rate */
 	verbose_set_sample_rate(dongle.dev, dongle.rate);
-	fprintf(stderr, "Output at %u Hz.\n", demod.rate_in/demod.post_downsample);
+	fprintf(stderr, "Output at %u Hz.\n", demod.rate_out2);
 
 	while (!do_exit) {
 		safe_cond_wait(&s->hop, &s->hop_m);
