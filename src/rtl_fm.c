@@ -364,18 +364,28 @@ void halfsample(int16_t *data, int length)
 {
 	int i;
 	int16_t a,b,c,d;
-	b = data[0];
-	c = data[2];
-	d = data[4];
-	data[0] = ((b+d)>>1) + (b+c);
-	for (i = 2; (i*2)<(length+4); i+=2) {
+	c = data[0];
+	d = data[2];
+	data[0] = (c * 2 + d);
+	for (i = 2; (i*2)<(length-4); i+=2) {
 		a = c;
 		b = d;
 		c = data[i*2+2];
 		d = data[i*2+4];
 		data[i] = ((a+d)>>1) + (b+c);
 	}
-	data[i] = ((b+d)>>1) + (c+d);
+	data[i] = (c + 2 * d);
+}
+
+void quartersample(int16_t *data, int length)
+/* quarter samplerate without scaling, interleaved as above
+	scales 6/8  */
+{
+	int i;
+	for (i = 0; (i*4)<(length - 8); i+=2) {
+		data[i] = ( data[i*4] + 2 * (data[i*4 +2] + data[i*4 +4])
+				+ data[i*4 +6] )>>3; 
+	}
 }
 
 void generic_fir(int16_t *data, int length, int *fir, int16_t *hist)
@@ -549,12 +559,20 @@ void am_demod(struct demod_state *fm)
 	// lowpass? (3khz)  highpass?  (dc)
 }
 
+
+/* This is not single sideband. The processing needed to remove the extra sideband would often 
+ *	add more noise than the signal it removes, for narrow band use.
+ * Resample before combining I/Q : assumes default 4x oversample */
 void usb_demod(struct demod_state *fm)
 {
 	int i, pcm;
 	int16_t *lp = fm->lowpassed;
 	int16_t *r  = fm->result;
 	int16_t scale = digiboost * fm->output_scale;
+
+	quartersample(fm->lowpassed, fm->lp_len -1);
+	quartersample(fm->lowpassed+1, fm->lp_len-1);
+	fm->lp_len >>= 2;
 	for (i = 0; i < fm->lp_len; i += 2) {
 		pcm = lp[i] + lp[i+1];
 		r[i/2] = scale * pcm;
@@ -653,70 +671,6 @@ int rms(int16_t *samples, int len, int step)
 	return (int)sqrt((p-err) / len);
 }
 
-void arbitrary_upsample(int16_t *buf1, int16_t *buf2, int len1, int len2)
-/* linear interpolation, len1 < len2 */
-{
-	int i = 1;
-	int j = 0;
-	int tick = 0;
-	float frac;  // division, dont use integers...
-	while (j < len2) {
-		frac = (float)tick / (float)len2;
-		buf2[j] = (int16_t)(buf1[i-1]*(1-frac) + buf1[i]*frac);
-		j++;
-		tick += len1;
-		if (tick > len2) {
-			tick -= len2;
-			i++;
-		}
-		if (i >= len1) {
-			i = len1 - 1;
-			tick = len2;
-		}
-	}
-}
-
-void arbitrary_downsample(int16_t *buf1, int16_t *buf2, int len1, int len2)
-/* fractional boxcar lowpass, len1 > len2 */
-{
-	int i = 1;
-	int j = 0;
-	int tick = 0;
-	float remainder = 0;
-	float frac;  // division, dont use integers...
-	buf2[0] = 0;
-	while (j < len2) {
-		frac = 1.0;
-		if ((tick + len2) > len1) {
-			frac = (float)(len1 - tick) / (float)len2;}
-		buf2[j] += (int16_t)((float)buf1[i] * frac + remainder);
-		remainder = (float)buf1[i] * (1.0-frac);
-		tick += len2;
-		i++;
-		if (tick > len1) {
-			j++;
-			buf2[j] = 0;
-			tick -= len1;
-		}
-		if (i >= len1) {
-			i = len1 - 1;
-			tick = len1;
-		}
-	}
-	for (j=0; j<len2; j++) {
-		buf2[j] = buf2[j] * len2 / len1;}
-}
-
-void arbitrary_resample(int16_t *buf1, int16_t *buf2, int len1, int len2)
-/* up to you to calculate lengths and make sure it does not go OOB
- * okay for buffers to overlap, if you are downsampling */
-{
-	if (len1 < len2) {
-		arbitrary_upsample(buf1, buf2, len1, len2);
-	} else {
-		arbitrary_downsample(buf1, buf2, len1, len2);
-	}
-}
 
 /*udp*/
 static unsigned int chars_to_int(unsigned char* buf) {
@@ -841,9 +795,9 @@ void full_demod(struct demod_state *d)
 			d->squelch_hits = 0;}
 	}
 	d->mode_demod(d);  /* lowpassed -> result */
-	if (d->mode_demod == &raw_demod) {
-		return;
-	}
+	if (d->mode_demod == &raw_demod) return;
+	if (d->mode_demod == &usb_demod) return;
+
 	/* todo, fm noise squelch */
 	// use nicer filter here too?
 	if (d->post_downsample > 1) {
@@ -854,7 +808,6 @@ void full_demod(struct demod_state *d)
 		dc_block_filter(d);}
 	if (d->rate_out2 > 0) {
 		low_pass_real(d);
-		//arbitrary_resample(d->result, d->result, d->result_len, d->result_len * d->rate_out2 / d->rate_out);
 	}
 }
 
