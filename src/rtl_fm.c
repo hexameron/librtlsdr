@@ -364,27 +364,28 @@ void halfsample(int16_t *data, int length)
 {
 	int i;
 	int16_t a,b,c,d;
-	c = data[0];
-	d = data[2];
-	data[0] = (c * 2 + d);
-	for (i = 2; (i*2)<(length-4); i+=2) {
+	b = data[0];
+	c = data[2];
+	d = data[4];
+	data[0] = (3*b +2*c + d)>>1;
+	for (i = 2; (i*2+6) < length; i+=2) {
 		a = c;
 		b = d;
 		c = data[i*2+2];
 		d = data[i*2+4];
 		data[i] = ((a+d)>>1) + (b+c);
 	}
-	data[i] = (c + 2 * d);
+	data[i] = (c + 2*d  + 3*data[i*2+2])>>1;
 }
 
 void quartersample(int16_t *data, int length)
 /* quarter samplerate without scaling, interleaved as above
-	scales 6/8  */
+	scales x6, which is safe with default settings */
 {
 	int i;
 	for (i = 0; (i*4)<(length - 8); i+=2) {
 		data[i] = ( data[i*4] + 2 * (data[i*4 +2] + data[i*4 +4])
-				+ data[i*4 +6] )>>3; 
+				+ data[i*4 +6] ); 
 	}
 }
 
@@ -574,12 +575,13 @@ void usb_demod(struct demod_state *fm)
 	quartersample(fm->lowpassed+1, fm->lp_len-1);
 	fm->lp_len >>= 2;
 	for (i = 0; i < fm->lp_len; i += 2) {
-		pcm = lp[i] + lp[i+1];
-		r[i/2] = scale * pcm;
+		pcm = scale * (lp[i] + lp[i+1]);
+		r[i/2] = pcm >> 3;
 	}
 	fm->result_len = fm->lp_len/2;
 }
 
+/* lsb is same as usb, but with different output scaling */
 void lsb_demod(struct demod_state *fm)
 {
 	int i, pcm;
