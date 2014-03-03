@@ -31,23 +31,8 @@
  * based on rtl_sdr.c and rtl_tcp.c
  *
  * lots of locks, but that is okay
- * (no many-to-many locks)
  *
  * todo:
- *       sanity checks
- *       scale squelch to other input parameters
- *       test all the demodulations
- *       pad output on hop
- *       frequency ranges could be stored better
- *       scaled AM demod amplification
- *       auto-hop after time limit
- *       peak detector to tune onto stronger signals
- *       fifo for active hop frequency
- *       clips
- *       noise squelch
- *       merge stereo patch
- *       merge soft agc patch
- *       testmode to detect overruns
  *       watchdog to reset bad dongle
  *       fix oversampling
  */
@@ -89,13 +74,11 @@
 #define MAXIMUM_BUF_LENGTH		(MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
 #define AUTO_GAIN			-100
 
-//udp
 static pthread_t socket_thread;
 static void optimal_settings(int freq, int rate);
 static int digiboost = 1;
 
 static volatile int do_exit = 0;
-static int ACTUAL_BUF_LENGTH;
 
 struct dongle_state
 {
@@ -153,12 +136,9 @@ struct output_state
 struct controller_state
 {
 	int      exit_flag;
-	pthread_t thread;
 	uint32_t freqs[2];
 	int      freq_len;
 	int      freq_now;
-	pthread_cond_t hop;
-	pthread_mutex_t hop_m;
 };
 
 // multiple of these, eventually
@@ -260,7 +240,7 @@ static void *socket_thread_fn(void *arg) {
 	int port = 6020;
   int r, n;
   int sockfd, newsockfd, portno;
-  int new_freq, demod_type, new_squelch, new_gain, agc_mode;
+  int new_freq, new_gain, agc_mode;
   socklen_t clilen;
   unsigned char buffer[5];
   struct sockaddr_in serv_addr, cli_addr;
@@ -418,14 +398,11 @@ static void optimal_settings(int freq, int rate)
 	d->rate = (uint32_t)capture_rate;
 }
 
-static void *controller_thread_fn(void *arg)
+/* UDP handles retuning, only need to call this once */
+void controller_start(struct controller_state *s)
 {
-	// thoughts for multiple dongles
-	// might be no good using a controller thread if retune/rate blocks
 	int i;
-	struct controller_state *s = arg;
 
-	/* set up primary channel */
 	optimal_settings(s->freqs[0], demod.rate_in);
 	if (dongle.direct_sampling) {
 		verbose_direct_sampling(dongle.dev, 1);}
@@ -434,26 +411,13 @@ static void *controller_thread_fn(void *arg)
 
 	/* Set the frequency */
 	verbose_set_frequency(dongle.dev, dongle.freq);
-	fprintf(stderr, "Oversampling input by: %ix.\n", demod.downsample);
-	fprintf(stderr, "Oversampling output by: %ix.\n", demod.post_downsample);
+	fprintf(stderr, "Oversampling output by: 64x.\n");
 	fprintf(stderr, "Buffer size: %0.2fms\n",
-		1000 * 0.5 * (float)ACTUAL_BUF_LENGTH / (float)dongle.rate);
+		1000 * 0.5 * (float)DEFAULT_BUF_LENGTH / (float)dongle.rate);
 
 	/* Set the sample rate */
 	verbose_set_sample_rate(dongle.dev, dongle.rate);
 	fprintf(stderr, "Output at %u Hz.\n", DEFAULT_SAMPLE_RATE);
-
-	while (!do_exit) {
-		safe_cond_wait(&s->hop, &s->hop_m);
-		if (s->freq_len <= 1) {
-			continue;}
-		/* hacky hopping */
-		s->freq_now = (s->freq_now + 1) % s->freq_len;
-		optimal_settings(s->freqs[s->freq_now], demod.rate_in);
-		rtlsdr_set_center_freq(dongle.dev, dongle.freq);
-		dongle.mute = 4096;
-	}
-	return 0;
 }
 
 void dongle_init(struct dongle_state *s)
@@ -505,14 +469,6 @@ void controller_init(struct controller_state *s)
 {
 	s->freqs[0] = 100000000;
 	s->freq_len = 0;
-	pthread_cond_init(&s->hop, NULL);
-	pthread_mutex_init(&s->hop_m, NULL);
-}
-
-void controller_cleanup(struct controller_state *s)
-{
-	pthread_cond_destroy(&s->hop);
-	pthread_mutex_destroy(&s->hop_m);
 }
 
 void sanity_checks(void)
@@ -547,15 +503,15 @@ int main(int argc, char **argv)
 	output_init(&output);
 	controller_init(&controller);
 
-	while ((opt = getopt(argc, argv, "d:f:g:p")) != -1) {
+	while ((opt = getopt(argc, argv, "d:f:g:p:h")) != -1) {
 		switch (opt) {
 		case 'd':
 			dongle.dev_index = verbose_device_search(optarg);
 			dev_given = 1;
 			break;
 		case 'f':
-			controller.freqs[controller.freq_len] = (uint32_t)atofs(optarg);
-			controller.freq_len++;
+			controller.freqs[0] = (uint32_t)atofs(optarg);
+			controller.freq_len = 1;
 			break;
 		case 'g':
 			dongle.gain = (int)(atof(optarg) * 10);
@@ -564,6 +520,7 @@ int main(int argc, char **argv)
 			dongle.ppm_error = atoi(optarg);
 			custom_ppm = 1;
 			break;
+		case 'h':
 		default:
 			usage();
 			break;
@@ -636,12 +593,11 @@ int main(int argc, char **argv)
 	/* Reset endpoint before we start reading from it (mandatory) */
 	verbose_reset_buffer(dongle.dev);
 
-	pthread_create(&controller.thread, NULL, controller_thread_fn, (void *)(&controller));
+	controller_start(&controller);
 	usleep(100000);
 	pthread_create(&output.thread, NULL, output_thread_fn, (void *)(&output));
 	pthread_create(&demod.thread, NULL, demod_thread_fn, (void *)(&demod));
 	pthread_create(&dongle.thread, NULL, dongle_thread_fn, (void *)(&dongle));
-//udp
 	pthread_create(&socket_thread, NULL, socket_thread_fn, (void *)(&controller));
 
 	while (!do_exit) {
@@ -657,13 +613,9 @@ int main(int argc, char **argv)
 	pthread_join(demod.thread, NULL);
 	safe_cond_signal(&output.ready, &output.ready_m);
 	pthread_join(output.thread, NULL);
-	safe_cond_signal(&controller.hop, &controller.hop_m);
-	pthread_join(controller.thread, NULL);
 
-	//dongle_cleanup(&dongle);
 	demod_cleanup(&demod);
 	output_cleanup(&output);
-	controller_cleanup(&controller);
 
 	if (output.file != stdout) {
 		fclose(output.file);}
