@@ -383,7 +383,7 @@ void quartersample(int16_t *data, int length)
 	scales x6, which is safe with default settings */
 {
 	int i;
-	for (i = 0; (i*4)<(length - 8); i+=2) {
+	for (i = 0; (i*4)<(length - 6); i+=2) {
 		data[i] = ( data[i*4] + 2 * (data[i*4 +2] + data[i*4 +4])
 				+ data[i*4 +6] ); 
 	}
