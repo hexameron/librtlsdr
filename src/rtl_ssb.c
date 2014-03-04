@@ -1,6 +1,6 @@
 /*
+ * rtl-ssb: cut down version of rtl_fm, with fixed usb mode and 24 kHz output
  * rtl-sdr, turns your Realtek RTL2832 based DVB dongle into a SDR receiver
- * rtl-ssb, cut down version of rtl_fm, with fixed usb mode and 8 kHz output
  * Copyright (C) 2012 by Steve Markgraf <steve@steve-m.de>
  * Copyright (C) 2012 by Hoernchen <la@tfc-server.de>
  * Copyright (C) 2012 by Kyle Keen <keenerd@gmail.com>
@@ -200,6 +200,25 @@ void quartersample(int16_t *data, int length)
 /* This is not single sideband. The processing needed to remove the extra sideband would often 
  *	add more noise than the signal it removes, for narrow band use.
  */
+void convolveIQ(struct demod_state *fm)
+{
+	int32_t i, sum;
+	int16_t out;
+	int16_t *lp = fm->lowpassed;
+	int16_t *r  = fm->result;
+
+	for (i = 0; i < fm->lp_len; i += 2) {
+		sum = lp[i]+lp[i+1];
+		
+		//  clipping
+		sum *= digiboost;
+		if (sum > 32767) sum = 32767;
+		if (sum < -32767) sum = -32767;
+		r[i/2] = (int16_t)(sum);
+	}
+
+}
+
 void ssb_demod(struct demod_state *fm)
 {
 	int i, pcm;
@@ -213,12 +232,7 @@ void ssb_demod(struct demod_state *fm)
 		fm->lp_len >>= 2;
 	}
 
-	/* Combine I/Q: it would be better to output stereo samples */
-	for (i = 0; i < fm->lp_len; i += 2) {
-		pcm = digiboost * (lp[i] + lp[i+1]);
-		/* better to output I/Q as stereo samples */
-		r[i/2] = pcm >> 1;
-	}
+	convolveIQ(fm);	
 	fm->result_len = fm->lp_len/2;
 }
 
@@ -235,15 +249,16 @@ static unsigned int chars_to_int(unsigned char* buf) {
 	return val;
 }
 
-static void *socket_thread_fn(void *arg) {
+static void *socket_thread_fn(void *arg) 
+{
 	struct controller_state *fm = arg;
 	int port = 6020;
-  int r, n;
-  int sockfd, newsockfd, portno;
-  int new_freq, new_gain, agc_mode;
-  socklen_t clilen;
-  unsigned char buffer[5];
-  struct sockaddr_in serv_addr, cli_addr;
+	int r, n;
+	int sockfd, newsockfd, portno;
+	int new_freq, new_gain, agc_mode;
+	socklen_t clilen;
+	unsigned char buffer[5];
+	struct sockaddr_in serv_addr, cli_addr;
 
 	sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (sockfd < 0) {
@@ -385,6 +400,7 @@ static void optimal_settings(int freq, int rate)
 	struct dongle_state *d = &dongle;
 	struct demod_state *dm = &demod;
 	struct controller_state *cs = &controller;
+
 	dm->downsample = (1000000 / dm->rate_in) + 1;
 	if (dm->downsample_passes) {
 		dm->downsample_passes = (int)log2(dm->downsample) + 1;
