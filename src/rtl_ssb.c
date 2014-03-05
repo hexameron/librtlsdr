@@ -77,6 +77,7 @@
 static pthread_t socket_thread;
 static void optimal_settings(int freq, int rate);
 static int digiboost = 1;
+static int isStereo = 0;
 
 static volatile int do_exit = 0;
 
@@ -156,10 +157,11 @@ void usage(void)
 		"\t[-d device_index (default: 0)]\n"
 		"\t[-g tuner_gain (default: automatic)]\n"
 		"\t[-p ppm_error (default: 0)]\n"
+		"\t[-q write I/Q as stereo n"
 		"\tfilename ('-' means stdout)\n"
 		"\t    omitting the filename also uses stdout\n\n"
 		"\n"
-		"\trtl_ssb -f 434500000\n" );
+		"\trtl_ssb -f 434.5e6\n" );
 	exit(1);
 }
 
@@ -209,7 +211,7 @@ void convolveIQ(struct demod_state *fm)
 
 	for (i = 0; i < fm->lp_len; i += 2) {
 		sum = lp[i]+lp[i+1];
-		
+
 		//  clipping
 		sum *= digiboost;
 		if (sum > 32767) sum = 32767;
@@ -232,8 +234,18 @@ void ssb_demod(struct demod_state *fm)
 		fm->lp_len >>= 2;
 	}
 
-	convolveIQ(fm);	
-	fm->result_len = fm->lp_len/2;
+	if (isStereo) {
+		for (i = 0; i < fm->lp_len; i ++) {
+			pcm = digiboost * lp[i];
+			if (pcm >  32767) pcm =  32767;
+			if (pcm < -32767) pcm = -32767;
+			r[i] = (int16_t)pcm;
+		}
+		fm->result_len = fm->lp_len;
+	} else {
+		convolveIQ(fm);	
+		fm->result_len = fm->lp_len/2;
+	}
 }
 
 /*udp*/
@@ -495,14 +507,22 @@ void sanity_checks(void)
 	}
 }
 
-/* 16KHz very long wav header */
+/* 24KHz very long wav header */
 void writewavheader(FILE *outfile)
 {
 	char wavhead[] = {
 	0x52,0x49, 0x46,0x46, 0x64,0x19, 0xff,0x7f, 0x57,0x41, 0x56,0x45, 0x66,0x6d, 0x74,0x20,
-	0x10,0x00, 0x00,0x00, 0x01,0x00, 0x01,0x00, 0xc0,0x5d, 0x00,0x00, 0x80,0xbb, 0x00,0x00,
+	0x10,0x00, 0x00,0x00, 0x01,0x00, 0x01,0x00, 0xc0,0x5d, 0x00,0x00, 0xc0,0x5d, 0x00,0x00,
 	0x02,0x00, 0x10,0x00, 0x64,0x61, 0x74,0x61, 0x40,0x19, 0xff,0x7f, 0x00,0x00, 0x00,0x00
 	};
+	if (isStereo) {
+		wavhead[0x16] = 0x02; // stereo
+		// 0x18 is samplerate, 0x1c is rate * channels * bytes per sample
+		wavhead[0x1c] = 0x00;
+		wavhead[0x1d] = 0x77;
+		wavhead[0x1e] = 0x01;
+		wavhead[0x20] = 0x04; // 2 channels x 16 bit
+	}
 	fwrite(wavhead, 2, sizeof(wavhead), outfile);
 }
 
@@ -519,7 +539,7 @@ int main(int argc, char **argv)
 	output_init(&output);
 	controller_init(&controller);
 
-	while ((opt = getopt(argc, argv, "d:f:g:p:h")) != -1) {
+	while ((opt = getopt(argc, argv, "d:f:g:p:qh")) != -1) {
 		switch (opt) {
 		case 'd':
 			dongle.dev_index = verbose_device_search(optarg);
@@ -535,6 +555,9 @@ int main(int argc, char **argv)
 		case 'p':
 			dongle.ppm_error = atoi(optarg);
 			custom_ppm = 1;
+			break;
+		case 'q':
+			isStereo = 1;
 			break;
 		case 'h':
 		default:
