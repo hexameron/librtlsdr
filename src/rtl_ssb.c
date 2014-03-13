@@ -213,7 +213,7 @@ void convolveIQ(struct demod_state *fm)
 		sum = lp[i]+lp[i+1];
 
 		//  clipping
-		sum *= digiboost;
+		sum *= 2 * digiboost;
 		if (sum > 32767) sum = 32767;
 		if (sum < -32767) sum = -32767;
 		r[i/2] = (int16_t)(sum);
@@ -227,8 +227,8 @@ void ssb_demod(struct demod_state *fm)
 	int16_t *lp = fm->lowpassed;
 	int16_t *r  = fm->result;
 
-	// downsample 2^6, scale up x216
-	for (i=0; i<3; i++){
+	// downsample 2^4, scale up x36 => x144 overall  . Is dongle 7 bits or 8 ?
+	for (i=0; i<2; i++){
 		quartersample(fm->lowpassed, fm->lp_len -1);
 		quartersample(fm->lowpassed+1, fm->lp_len-1);
 		fm->lp_len >>= 2;
@@ -236,7 +236,7 @@ void ssb_demod(struct demod_state *fm)
 
 	if (isStereo) {
 		for (i = 0; i < fm->lp_len; i ++) {
-			pcm = digiboost * lp[i];
+			pcm = 2 * digiboost * lp[i];
 			if (pcm >  32767) pcm =  32767;
 			if (pcm < -32767) pcm = -32767;
 			r[i] = (int16_t)pcm;
@@ -353,11 +353,29 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 			buf[i] = 127;}
 		s->mute = 0;
 	}
-	for (i=0; i<(int)len; i++) {
-		s->buf16[i] = (int16_t)buf[i] - 127;}
+
+	if (s->offset_tuning) {
+		// cast and resample
+		for (i=0; i<(int)(len>>2); i+=2) {
+			s->buf16[i] = (int16_t)buf[i*4 +0] + (int16_t)buf[i*4 +2];
+			s->buf16[i] += (int16_t)buf[i*4 +4] + (int16_t)buf[i*4 +6];
+			s->buf16[i] -= 127 * 4;
+			s->buf16[i+1] = (int16_t)buf[i*4 +1] + (int16_t)buf[i*4 +3];
+			s->buf16[i+1] += (int16_t)buf[i*4 +5] + (int16_t)buf[i*4 +7];
+			s->buf16[i+1] -= 127 * 4;
+		}
+	} else {
+		// rotate  [0, 1, -3, 2, -4, -5, 7, -6], cast and resample
+		for (i=0; i<(int)(len>>2); i+=2) {
+			s->buf16[i] = (int16_t)buf[i*4 +0] - (int16_t)buf[i*4 +3];
+			s->buf16[i] += (int16_t)buf[i*4 +7] - (int16_t)buf[i*4 +4];
+			s->buf16[i+1] = (int16_t)buf[i*4 +1] - (int16_t)buf[i*4 +5];
+			s->buf16[i+1] += (int16_t)buf[i*4 +2] - (int16_t)buf[i*4 +6];
+		}
+	}
 	pthread_rwlock_wrlock(&d->rw);
-	memcpy(d->lowpassed, s->buf16, 2*len);
-	d->lp_len = len;
+	memcpy(d->lowpassed, s->buf16, len>>1);
+	d->lp_len = len>>2;
 	pthread_rwlock_unlock(&d->rw);
 	safe_cond_signal(&d->ready, &d->ready_m);
 }
