@@ -157,11 +157,11 @@ void usage(void)
 		"\t[-d device_index (default: 0)]\n"
 		"\t[-g tuner_gain (default: automatic)]\n"
 		"\t[-p ppm_error (default: 0)]\n"
-		"\t[-q write I/Q as stereo n"
+		"\t[-q write I/Q as stereo]\n"
 		"\tfilename ('-' means stdout)\n"
 		"\t    omitting the filename also uses stdout\n\n"
 		"\n"
-		"\trtl_ssb -f 434.5e6\n" );
+		"\trtl_ssb -f 434.5e6 |dl-fldigi --pipe\n" );
 	exit(1);
 }
 
@@ -213,7 +213,7 @@ void convolveIQ(struct demod_state *fm)
 		sum = lp[i]+lp[i+1];
 
 		//  clipping
-		sum *= 2 * digiboost;
+		sum *= digiboost;
 		if (sum > 32767) sum = 32767;
 		if (sum < -32767) sum = -32767;
 		r[i/2] = (int16_t)(sum);
@@ -223,20 +223,28 @@ void convolveIQ(struct demod_state *fm)
 
 void ssb_demod(struct demod_state *fm)
 {
-	int i, pcm;
+	int i, j, pcm;
 	int16_t *lp = fm->lowpassed;
 	int16_t *r  = fm->result;
 
-	// downsample 2^4, scale up x36 => x144 overall  . Is dongle 7 bits or 8 ?
-	for (i=0; i<2; i++){
-		quartersample(fm->lowpassed, fm->lp_len -1);
-		quartersample(fm->lowpassed+1, fm->lp_len-1);
-		fm->lp_len >>= 2;
+	// Extra downsample for 12kHz, 8x
+	int16_t *data = fm->lowpassed;
+	for (j=0; j<3; j++) {
+		for (i = 0; (i*2) < (fm->lp_len - 3); i += 2) {
+			data[ i ] = data[ i*2 ] + data[i*2+2];
+			data[i+1] = data[i*2+1] + data[i*2+3];
+		}
+		fm->lp_len >>= 1;
 	}
 
+	// downsample x4, scale up x6  => (4x8x6) = x192 overall
+	quartersample(fm->lowpassed, fm->lp_len -1);
+	quartersample(fm->lowpassed+1, fm->lp_len-1);
+	fm->lp_len >>= 2;
+
 	if (isStereo) {
-		for (i = 0; i < fm->lp_len; i ++) {
-			pcm = 2 * digiboost * lp[i];
+		for (i = 0; i < fm->lp_len; i++) {
+			pcm = digiboost * lp[i];
 			if (pcm >  32767) pcm =  32767;
 			if (pcm < -32767) pcm = -32767;
 			r[i] = (int16_t)pcm;
@@ -525,20 +533,20 @@ void sanity_checks(void)
 	}
 }
 
-/* 24KHz very long wav header */
+/* 12KHz very long wav header */
 void writewavheader(FILE *outfile)
 {
 	char wavhead[] = {
 	0x52,0x49, 0x46,0x46, 0x64,0x19, 0xff,0x7f, 0x57,0x41, 0x56,0x45, 0x66,0x6d, 0x74,0x20,
-	0x10,0x00, 0x00,0x00, 0x01,0x00, 0x01,0x00, 0xc0,0x5d, 0x00,0x00, 0xc0,0x5d, 0x00,0x00,
+	0x10,0x00, 0x00,0x00, 0x01,0x00, 0x01,0x00, 0xe0,0x2e, 0x00,0x00, 0xe0,0x2e, 0x00,0x00,
 	0x02,0x00, 0x10,0x00, 0x64,0x61, 0x74,0x61, 0x40,0x19, 0xff,0x7f, 0x00,0x00, 0x00,0x00
 	};
 	if (isStereo) {
 		wavhead[0x16] = 0x02; // stereo
 		// 0x18 is samplerate, 0x1c is rate * channels * bytes per sample
-		wavhead[0x1c] = 0x00;
-		wavhead[0x1d] = 0x77;
-		wavhead[0x1e] = 0x01;
+		wavhead[0x1c] = 0x80;
+		wavhead[0x1d] = 0xbb;
+		wavhead[0x1e] = 0x00;
 		wavhead[0x20] = 0x04; // 2 channels x 16 bit
 	}
 	fwrite(wavhead, 2, sizeof(wavhead), outfile);
