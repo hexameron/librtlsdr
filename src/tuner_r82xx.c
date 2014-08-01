@@ -785,11 +785,11 @@ static int r82xx_set_tv_standard(struct r82xx_priv *priv,
 	} else {
 		if (bw <= 6) {
 			if_khz = 3570;
-			filt_cal_lo = 56000;	/* 52000->56000 */
+			filt_cal_lo = 39000;
 			filt_gain = 0x10;	/* +3db, 6mhz on */
 			img_r = 0x00;		/* image negative */
 			filt_q = 0x10;		/* r10[4]:low q(1'b1) */
-			hp_cor = 0x6b;		/* 1.7m disable, +2cap, 1.0mhz */
+			hp_cor = 0x85;		/* 2.4Mhz-3.9Mhz */
 			ext_enable = 0x60;	/* r30[6]=1 ext enable; r30[5]:1 ext at lna max-1 */
 			loop_through = 0x00;	/* r5[7], lt on */
 			lt_att = 0x00;		/* r31[7], lt att enable */
