@@ -211,6 +211,7 @@ void usage(void)
 		"\t    deemp:  enable de-emphasis filter\n"
 		"\t    direct: enable direct sampling\n"
 		"\t    offset: enable offset tuning\n"
+		"\t    wav:    generate WAV header\n"
 		"\tfilename ('-' means stdout)\n"
 		"\t    omitting the filename also uses stdout\n\n"
 		"Experimental options:\n"
@@ -1071,15 +1072,38 @@ void sanity_checks(void)
 
 }
 
-/* Proof-of-concept 48KHz very long wav header: fix me */
-void writewavheader(FILE *outfile)
+int generate_header(struct demod_state *d, struct output_state *o)
 {
-	char wavhead[] = {
-	0x52,0x49, 0x46,0x46, 0x64,0x19, 0xff,0x7f, 0x57,0x41, 0x56,0x45, 0x66,0x6d, 0x74,0x20,
-	0x10,0x00, 0x00,0x00, 0x01,0x00, 0x01,0x00, 0x80,0xbb, 0x00,0x00, 0x00,0x77, 0x01,0x00,
-	0x02,0x00, 0x10,0x00, 0x64,0x61, 0x74,0x61, 0x40,0x19, 0xff,0x7f, 0x00,0x00, 0x00,0x00
-	};
-	fwrite(wavhead, 2, sizeof(wavhead), outfile);
+	int i, s_rate, b_rate;
+	char *channels = "\1\0";
+	char *align = "\2\0";
+	uint8_t samp_rate[4] = {0, 0, 0, 0};
+	uint8_t byte_rate[4] = {0, 0, 0, 0};
+	s_rate = o->rate;
+	b_rate = o->rate * 2;
+	if (d->mode_demod == &raw_demod) {
+		channels = "\2\0";
+		align = "\4\0";
+		b_rate *= 2;
+	}
+	for (i=0; i<4; i++) {
+		samp_rate[i] = (uint8_t)((s_rate >> (8*i)) & 0xFF);
+		byte_rate[i] = (uint8_t)((b_rate >> (8*i)) & 0xFF);
+	}
+	fwrite("RIFF",     1, 4, o->file);
+	fwrite("\xFF\xFF\xFF\xFF", 1, 4, o->file);  /* size */
+	fwrite("WAVE",     1, 4, o->file);
+	fwrite("fmt ",     1, 4, o->file);
+	fwrite("\x10\0\0\0", 1, 4, o->file);  /* size */
+	fwrite("\1\0",     1, 2, o->file);  /* pcm */
+	fwrite(channels,   1, 2, o->file);
+	fwrite(samp_rate,  1, 4, o->file);
+	fwrite(byte_rate,  1, 4, o->file);
+	fwrite(align, 1, 2, o->file);
+	fwrite("\x10\0",     1, 2, o->file);  /* bits per channel */
+	fwrite("data",     1, 4, o->file);
+	fwrite("\xFF\xFF\xFF\xFF", 1, 4, o->file);  /* size */
+	return 0;
 }
 
 int main(int argc, char **argv)
@@ -1266,7 +1290,8 @@ int main(int argc, char **argv)
 			exit(1);
 		}
 	}
-	writewavheader(output.file);
+
+	generate_header(&demod, &output);
 
 	/* Reset endpoint before we start reading from it (mandatory) */
 	verbose_reset_buffer(dongle.dev);
