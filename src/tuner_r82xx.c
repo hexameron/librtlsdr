@@ -419,12 +419,11 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 	int rc, i;
 	unsigned sleep_time = 10000;
 	uint64_t vco_freq;
-	uint32_t vco_fra;	/* VCO contribution by SDM (kHz) */
-	uint32_t vco_min = 1770000;
-	uint32_t vco_max = vco_min * 2;
-	uint32_t freq_khz, pll_ref, pll_ref_khz;
-	uint16_t n_sdm = 2;
-	uint16_t sdm = 0;
+	uint64_t vco_div;
+	uint32_t vco_min = 1770000; /* kHz */
+	uint32_t vco_max = vco_min * 2; /* kHz */
+	uint32_t freq_khz, pll_ref;
+	uint32_t sdm = 0;
 	uint8_t mix_div = 2;
 	uint8_t div_buf = 0;
 	uint8_t div_num = 0;
@@ -436,7 +435,6 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 	/* Frequency in kHz */
 	freq_khz = (freq + 500) / 1000;
 	pll_ref = priv->cfg->xtal;
-	pll_ref_khz = (priv->cfg->xtal + 500) / 1000;
 
 	rc = r82xx_write_reg_mask(priv, 0x10, refdiv2, 0x10);
 	if (rc < 0)
@@ -453,6 +451,8 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 		return rc;
 
 	/* Calculate divider */
+	if(freq_khz < vco_min/64) vco_min /= 2;
+	if(freq_khz >= vco_max/2) vco_max *= 2;
 	while (mix_div <= 64) {
 		if (((freq_khz * mix_div) >= vco_min) &&
 		   ((freq_khz * mix_div) < vco_max)) {
@@ -466,14 +466,10 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 		mix_div = mix_div << 1;
 	}
 
-	rc = r82xx_read(priv, 0x00, data, sizeof(data));
-	if (rc < 0)
-		return rc;
-
 	if (priv->cfg->rafael_chip == CHIP_R828D)
 		vco_power_ref = 1;
 
-	vco_fine_tune = (data[4] & 0x30) >> 4;
+	vco_fine_tune = 2;
 
 	if (vco_fine_tune > vco_power_ref)
 		div_num = div_num - 1;
@@ -485,10 +481,14 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 		return rc;
 
 	vco_freq = (uint64_t)freq * (uint64_t)mix_div;
-	nint = vco_freq / (2 * pll_ref);
-	vco_fra = (vco_freq - 2 * pll_ref * nint) / 1000;
+	vco_div = (pll_ref + 65536 * vco_freq) / (2 * pll_ref);
+	nint = (uint32_t) (vco_div / 65536);
+	sdm = (uint32_t) (vco_div % 65536);
 
-	if (nint > ((128 / vco_power_ref) - 1)) {
+	if (priv->cfg->rafael_chip == CHIP_R828D && nint > 127) {
+		fprintf(stderr, "[R828D] No valid PLL values for %u Hz!\n", freq);
+		return -1;
+	} else if (nint > 76) {
 		fprintf(stderr, "[R82XX] No valid PLL values for %u Hz!\n", freq);
 		return -1;
 	}
@@ -501,25 +501,15 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 		return rc;
 
 	/* pw_sdm */
-	if (!vco_fra)
+	if (sdm == 0)
 		val = 0x08;
 	else
 		val = 0x00;
+	//val |= 0x10; // Disable dither
 
-	rc = r82xx_write_reg_mask(priv, 0x12, val, 0x08);
+	rc = r82xx_write_reg_mask(priv, 0x12, val, 0x18);
 	if (rc < 0)
 		return rc;
-
-	/* sdm calculator */
-	while (vco_fra > 1) {
-		if (vco_fra > (2 * pll_ref_khz / n_sdm)) {
-			sdm = sdm + 32768 / (n_sdm / 2);
-			vco_fra = vco_fra - 2 * pll_ref_khz / n_sdm;
-			if (n_sdm >= 0x8000)
-				break;
-		}
-		n_sdm <<= 1;
-	}
 
 	rc = r82xx_write_reg(priv, 0x16, sdm >> 8);
 	if (rc < 0)
@@ -532,27 +522,25 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 //		usleep_range(sleep_time, sleep_time + 1000);
 
 		/* Check if PLL has locked */
+		data[2] = 0;
 		rc = r82xx_read(priv, 0x00, data, 3);
 		if (rc < 0)
 			return rc;
 		if (data[2] & 0x40)
 			break;
+		if (i > 0)
+			break;
 
-		if (!i) {
-			/* Didn't lock. Increase VCO current */
-			rc = r82xx_write_reg_mask(priv, 0x12, 0x60, 0xe0);
-			if (rc < 0)
-				return rc;
-		}
+		/* Didn't lock. Increase VCO current */
+		rc = r82xx_write_reg_mask(priv, 0x12, 0x60, 0xe0);
+		if (rc < 0)
+			return rc;
 	}
 
 	if (!(data[2] & 0x40)) {
 		fprintf(stderr, "[R82XX] PLL not locked!\n");
-		priv->has_lock = 0;
-		return 0;
+		return -1;
 	}
-
-	priv->has_lock = 1;
 
 	/* set pll autotune = 8kHz */
 	rc = r82xx_write_reg_mask(priv, 0x1a, 0x08, 0x08);
@@ -887,7 +875,7 @@ static int r82xx_set_tv_standard(struct r82xx_priv *priv,
 				return rc;
 
 			rc = r82xx_set_pll(priv, filt_cal_lo * 1000);
-			if (rc < 0 || !priv->has_lock)
+			if (rc < 0)
 				return rc;
 
 			/* Start Trigger */
@@ -908,6 +896,7 @@ static int r82xx_set_tv_standard(struct r82xx_priv *priv,
 				return rc;
 
 			/* Check if calibration worked */
+			data[4] = 0;
 			rc = r82xx_read(priv, 0x00, data, sizeof(data));
 			if (rc < 0)
 				return rc;
@@ -1084,7 +1073,7 @@ int r82xx_set_freq(struct r82xx_priv *priv, uint32_t freq)
 		goto err;
 
 	rc = r82xx_set_pll(priv, lo_freq);
-	if (rc < 0 || !priv->has_lock)
+	if (rc < 0)
 		goto err;
 
 	/* switch between 'Cable1' and 'Air-In' inputs on sticks with
