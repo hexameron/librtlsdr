@@ -81,7 +81,7 @@
 #include "rtl-sdr.h"
 #include "convenience/convenience.h"
 
-#define DEFAULT_SAMPLE_RATE		48000
+#define DEFAULT_SAMPLE_RATE		36000
 #define DEFAULT_BUF_LENGTH		(1 * 16384)
 #define MAXIMUM_OVERSAMPLE		16
 #define MAXIMUM_BUF_LENGTH		(MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
@@ -191,7 +191,7 @@ struct controller_state controller;
 void usage(void)
 {
 	fprintf(stderr,
-		"rtl_fm, a simple narrow band FM demodulator for RTL2832 based DVB-T receivers\n\n"
+		"rtl_fm, a simple FM demodulator for RTL2832 dongles. Low Samplerate Version.\n\n"
 		"Use:\trtl_fm -f freq [-options] [filename]\n"
 		"\t-f frequency_to_tune_to [Hz]\n"
 		"\t    use multiple -f for scanning (requires squelch)\n"
@@ -199,7 +199,7 @@ void usage(void)
 		"\t[-M modulation (default: fm)]\n"
 		"\t    fm, raw, am, usb, lsb\n"
 		"\t    raw mode outputs 2x16 bit IQ pairs\n"
-		"\t[-s sample_rate (default: 192k)]\n"
+		"\t[-s sample_rate (default: 144k S/s)]\n"
 		"\t[-d device_index (default: 0)]\n"
 		"\t[-g tuner_gain (default: automatic)]\n"
 		"\t[-l squelch_level (default: 0/off)]\n"
@@ -214,7 +214,7 @@ void usage(void)
 		"\tfilename ('-' means stdout)\n"
 		"\t    omitting the filename also uses stdout\n\n"
 		"Experimental options:\n"
-		"\t[-r resample_rate (default: 48k)]\n"
+		"\t[-r resample_rate (default: 36k)]\n"
 		"\t[-t squelch_delay (default: 10)]\n"
 		"\t    +values will mute/scan, -values will exit\n"
 		"\t[-F fir_size (default: off)]\n"
@@ -893,7 +893,7 @@ static void optimal_settings(int freq, int rate)
 	struct dongle_state *d = &dongle;
 	struct demod_state *dm = &demod;
 	struct controller_state *cs = &controller;
-	dm->downsample = (1000000 / dm->rate_in) + 1;
+	dm->downsample = (100000 / dm->rate_in) + 1;
 	if (dm->downsample_passes) {
 		dm->downsample_passes = (int)log2(dm->downsample) + 1;
 		dm->downsample = 1 << dm->downsample_passes;
@@ -1071,12 +1071,12 @@ void sanity_checks(void)
 
 }
 
-/* Proof-of-concept 48KHz very long wav header: fix me */
+/* Proof-of-concept 36KHz mono very long wav header: fix me */
 void writewavheader(FILE *outfile)
 {
 	char wavhead[] = {
 	0x52,0x49, 0x46,0x46, 0x64,0x19, 0xff,0x7f, 0x57,0x41, 0x56,0x45, 0x66,0x6d, 0x74,0x20,
-	0x10,0x00, 0x00,0x00, 0x01,0x00, 0x01,0x00, 0x80,0xbb, 0x00,0x00, 0x00,0x77, 0x01,0x00,
+	0x10,0x00, 0x00,0x00, 0x01,0x00, 0x01,0x00, 0xa0,0x8c, 0x00,0x00, 0xa0,0x8c, 0x00,0x00,
 	0x02,0x00, 0x10,0x00, 0x64,0x61, 0x74,0x61, 0x40,0x19, 0xff,0x7f, 0x00,0x00, 0x00,0x00
 	};
 	fwrite(wavhead, 2, sizeof(wavhead), outfile);
