@@ -68,7 +68,7 @@
 #include "rtl-sdr.h"
 #include "convenience/convenience.h"
 
-#define DEFAULT_SAMPLE_RATE		24000
+#define DEFAULT_SAMPLE_RATE		16000
 #define DEFAULT_BUF_LENGTH		(1 * 16384)
 #define MAXIMUM_OVERSAMPLE		16
 #define MAXIMUM_BUF_LENGTH		(MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
@@ -76,7 +76,7 @@
 
 static pthread_t socket_thread;
 static void optimal_settings(int freq, int rate);
-static int digiboost = 1;
+static int digiboost = 4;
 static int isStereo = 0;
 
 static volatile int do_exit = 0;
@@ -191,12 +191,12 @@ static void sighandler(int signum)
 #define safe_cond_wait(n, m) pthread_mutex_lock(m); pthread_cond_wait(n, m); pthread_mutex_unlock(m)
 
 /* quarter samplerate of interleaved I or Q samples
-        scales x6, which is safe with default settings */
+        maximum scales x4, which is safe with default settings */
 void quartersample(int16_t *data, int length)
 {
 	int i;
 	for (i = 0; (i*4)<(length - 6); i+=2)
-		data[i] = ( data[i*4] + 2*(data[i*4 +2] + data[i*4 +4])+ data[i*4 + 6] );
+		data[i] = ( data[i*4] + data[i*4 +2] + data[i*4 +4]+ data[i*4 + 6] );
 }
 
 /* This is not single sideband. The processing needed to remove the extra sideband would often 
@@ -214,8 +214,6 @@ void convolveIQ(struct demod_state *fm)
 
 		//  clipping
 		sum *= digiboost;
-		if (sum > 32767) sum = 32767;
-		if (sum < -32767) sum = -32767;
 		r[i/2] = (int16_t)(sum);
 	}
 
@@ -227,26 +225,14 @@ void ssb_demod(struct demod_state *fm)
 	int16_t *lp = fm->lowpassed;
 	int16_t *r  = fm->result;
 
-	// Extra downsample for 12kHz, 8x
-	int16_t *data = fm->lowpassed;
-	for (j=0; j<3; j++) {
-		for (i = 0; (i*2) < (fm->lp_len - 3); i += 2) {
-			data[ i ] = data[ i*2 ] + data[i*2+2];
-			data[i+1] = data[i*2+1] + data[i*2+3];
-		}
-		fm->lp_len >>= 1;
-	}
-
-	// downsample x4, scale up x6  => (4x8x6) = x192 overall
+	// Overall 4x4 downsample, 2x4 gain (256k to 16k down , 8bit to 16bit up)
 	quartersample(fm->lowpassed, fm->lp_len -1);
-	quartersample(fm->lowpassed+1, fm->lp_len-1);
+	quartersample(fm->lowpassed +1, fm->lp_len);
 	fm->lp_len >>= 2;
 
 	if (isStereo) {
 		for (i = 0; i < fm->lp_len; i++) {
 			pcm = digiboost * lp[i];
-			if (pcm >  32767) pcm =  32767;
-			if (pcm < -32767) pcm = -32767;
 			r[i] = (int16_t)pcm;
 		}
 		fm->result_len = fm->lp_len;
@@ -319,6 +305,7 @@ static void *socket_thread_fn(void *arg)
 		if (buffer[0] == 2) {
 			digiboost = 1 + (7 & chars_to_int(buffer));
 			fprintf (stderr, "Digital boost: %dx gain.\n", digiboost);
+			digiboost *= 4;
 		}
 
 		if (buffer[0] == 3) {
@@ -439,7 +426,7 @@ static void optimal_settings(int freq, int rate)
 	struct demod_state *dm = &demod;
 	struct controller_state *cs = &controller;
 
-	dm->downsample = (1000000 / dm->rate_in) + 1;
+	dm->downsample = (100000 / dm->rate_in) + 1;
 	if (dm->downsample_passes) {
 		dm->downsample_passes = (int)log2(dm->downsample) + 1;
 		dm->downsample = 1 << dm->downsample_passes;
@@ -533,19 +520,19 @@ void sanity_checks(void)
 	}
 }
 
-/* 12KHz very long wav header */
+/* 16KHz very long wav header */
 void writewavheader(FILE *outfile)
 {
 	char wavhead[] = {
 	0x52,0x49, 0x46,0x46, 0x64,0x19, 0xff,0x7f, 0x57,0x41, 0x56,0x45, 0x66,0x6d, 0x74,0x20,
-	0x10,0x00, 0x00,0x00, 0x01,0x00, 0x01,0x00, 0xe0,0x2e, 0x00,0x00, 0xe0,0x2e, 0x00,0x00,
+	0x10,0x00, 0x00,0x00, 0x01,0x00, 0x01,0x00, 0x80,0x3e, 0x00,0x00, 0x00,0x7d, 0x00,0x00,
 	0x02,0x00, 0x10,0x00, 0x64,0x61, 0x74,0x61, 0x40,0x19, 0xff,0x7f, 0x00,0x00, 0x00,0x00
 	};
 	if (isStereo) {
 		wavhead[0x16] = 0x02; // stereo
 		// 0x18 is samplerate, 0x1c is rate * channels * bytes per sample
-		wavhead[0x1c] = 0x80;
-		wavhead[0x1d] = 0xbb;
+		wavhead[0x1c] = 0x00;
+		wavhead[0x1d] = 0xfa;
 		wavhead[0x1e] = 0x00;
 		wavhead[0x20] = 0x04; // 2 channels x 16 bit
 	}
