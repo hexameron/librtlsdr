@@ -44,7 +44,7 @@ RTLSDR_API const char* rtlsdr_get_device_name(uint32_t index);
  * \param serial serial number, may be NULL
  * \return 0 on success
  */
-RTLSDR_API int rtlsdr_get_device_usb_strings(uint32_t index,
+RTLSDR_API int rtlsdr_get_device_usb_strings(uint index,
 					     char *manufact,
 					     char *product,
 					     char *serial);
