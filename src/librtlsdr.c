@@ -1367,7 +1367,8 @@ int rtlsdr_get_device_usb_strings(uint32_t index, char *manufact,
 
 int rtlsdr_get_index_by_serial(const char *serial)
 {
-	int i, cnt, r;
+	uint32_t i, cnt;
+	int r;
 	char str[256];
 
 	if (!serial)
