@@ -253,7 +253,7 @@ int verbose_device_search(char *s)
 	}
 	fprintf(stderr, "Found %d device(s):\n", device_count);
 	for (i = 0; i < device_count; i++) {
-		rtlsdr_get_device_usb_strings(i, vendor, product, serial);
+		rtlsdr_get_device_usb_strings((uint32_t)i, vendor, product, serial);
 		fprintf(stderr, "  %d:  %s, %s, SN: %s\n", i, vendor, product, serial);
 	}
 	fprintf(stderr, "\n");
@@ -266,7 +266,7 @@ int verbose_device_search(char *s)
 	}
 	/* does string exact match a serial */
 	for (i = 0; i < device_count; i++) {
-		rtlsdr_get_device_usb_strings(i, vendor, product, serial);
+		rtlsdr_get_device_usb_strings((uint32_t)i, vendor, product, serial);
 		if (strcmp(s, serial) != 0) {
 			continue;}
 		device = i;
@@ -276,7 +276,7 @@ int verbose_device_search(char *s)
 	}
 	/* does string prefix match a serial */
 	for (i = 0; i < device_count; i++) {
-		rtlsdr_get_device_usb_strings(i, vendor, product, serial);
+		rtlsdr_get_device_usb_strings((uint32_t)i, vendor, product, serial);
 		if (strncmp(s, serial, strlen(s)) != 0) {
 			continue;}
 		device = i;
@@ -286,7 +286,7 @@ int verbose_device_search(char *s)
 	}
 	/* does string suffix match a serial */
 	for (i = 0; i < device_count; i++) {
-		rtlsdr_get_device_usb_strings(i, vendor, product, serial);
+		rtlsdr_get_device_usb_strings((uint32_t)i, vendor, product, serial);
 		offset = strlen(serial) - strlen(s);
 		if (offset < 0) {
 			continue;}
