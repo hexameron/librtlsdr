@@ -1145,6 +1145,14 @@ int rtlsdr_set_direct_sampling(rtlsdr_dev_t *dev, int on)
 			rtlsdr_set_i2c_repeater(dev, 0);
 		}
 
+		if (dev->tuner_type == RTLSDR_TUNER_R820T) {
+			rtlsdr_dev_t* devt = (rtlsdr_dev_t*)dev;
+			rtlsdr_set_i2c_repeater(dev, 1);
+			dev->tuner->init(dev);
+			r82xx_set_nomod(&devt->r82xx_p);
+			rtlsdr_set_i2c_repeater(dev, 0);
+		}
+
 		/* disable Zero-IF mode */
 		r |= rtlsdr_demod_write_reg(dev, 1, 0xb1, 0x1a, 1);
 
@@ -1155,7 +1163,7 @@ int rtlsdr_set_direct_sampling(rtlsdr_dev_t *dev, int on)
 		r |= rtlsdr_demod_write_reg(dev, 0, 0x08, 0x4d, 1);
 
 		/* swap I and Q ADC, this allows to select between two inputs */
-		r |= rtlsdr_demod_write_reg(dev, 0, 0x06, (on > 1) ? 0x90 : 0x80, 1);
+		r |= rtlsdr_demod_write_reg(dev, 0, 0x06, (on == 2) ? 0x90 : 0x80, 1);
 
 		fprintf(stderr, "Enabled direct sampling mode, input %i\n", on);
 		dev->direct_sampling = on;
