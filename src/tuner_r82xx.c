@@ -1237,21 +1237,19 @@ int r82xx_set_nomod(struct r82xx_priv *priv)
 	int rc = -1;
 
 	fprintf(stderr, "Using R820T no-mod direct sampling mode\n");
-
 	rc = r82xx_set_tv_standard(priv, 8, TUNER_DIGITAL_TV, 0);
-	if (rc < 0)
-		goto err;
-
-	/* experimentally determined magic numbers
-	 * needs more experimenting with all the registers */
-	rc = r82xx_set_mux(priv, 300000000);
-	if (rc < 0)
-		goto err;
-
-	r82xx_set_pll(priv, 25000000);
-
-err:
-	if (rc < 0)
+	if (! rc)
+		rc = r82xx_set_mux(priv, 300000000);
+	/* the VCO frequency setting still seems to have some effect on the noise floor */
+	if (! rc)
+		rc = r82xx_set_pll(priv, 50000000);
+	/* the most important part: set a divider number that does not really work */
+	if (! rc)
+		rc = r82xx_write_reg_mask(priv, 0x10, 0xd0, 0xe0);
+	/* VCO power off? */
+	if (! rc)
+		rc = r82xx_write_reg_mask(priv, 0x12, 0xe0, 0xe0);
+	if (rc)
 		fprintf(stderr, "%s: failed=%d\n", __FUNCTION__, rc);
 	return rc;
 }

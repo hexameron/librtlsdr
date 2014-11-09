@@ -1137,9 +1137,11 @@ int rtlsdr_set_direct_sampling(rtlsdr_dev_t *dev, int on)
 
 	if (!dev)
 		return -1;
+	if (!dev->tuner)
+		return -1;
 
 	if (on) {
-		if (dev->tuner && dev->tuner->exit) {
+		if (dev->tuner->exit) {
 			rtlsdr_set_i2c_repeater(dev, 1);
 			r = dev->tuner->exit(dev);
 			rtlsdr_set_i2c_repeater(dev, 0);
