@@ -783,7 +783,7 @@ int main(int argc, char **argv)
 	time_t exit_time = 0;
 	char t_str[50];
 	struct tm *cal_time;
-	double (*window_fn)(int, int) = rectangle;
+	double (*window_fn)(int, int) = hamming;
 	freq_optarg = "";
 
 	while ((opt = getopt(argc, argv, "f:i:s:t:d:g:p:e:w:c:F:1PDOh")) != -1) {

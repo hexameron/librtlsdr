@@ -142,7 +142,7 @@ struct demod_state
 	int      output_scale;
 	int      squelch_level, conseq_squelch, squelch_hits, terminate_on_squelch;
 	int      downsample_passes;
-	int      comp_fir_size;
+	int      fir_size;
 	int      custom_atan;
 	int      deemph, deemph_a;
 	int      now_lpr;
@@ -199,7 +199,7 @@ void usage(void)
 		"\t[-M modulation (default: fm)]\n"
 		"\t    fm, raw, am, usb, lsb\n"
 		"\t    raw mode outputs 2x16 bit IQ pairs\n"
-		"\t[-s sample_rate (default: 192k)]\n"
+		"\t[-s sample_rate (default: 48k)]\n"
 		"\t[-d device_index (default: 0)]\n"
 		"\t[-g tuner_gain (default: automatic)]\n"
 		"\t[-l squelch_level (default: 0/off)]\n"
@@ -219,8 +219,8 @@ void usage(void)
 		"\t[-t squelch_delay (default: 10)]\n"
 		"\t    +values will mute/scan, -values will exit\n"
 		"\t[-F fir_size (default: off)]\n"
-		"\t    enables low-leakage downsample filter\n"
-		"\t    size can be 0 or 9.  0 has bad roll off\n"
+		"\t    enables low pass filter\n"
+		"\t    size can be 5 (narrow) or 9 (very narrow)\n"
 		"\t[-A std/fast/lut choose atan math (default: std)]\n"
 		"\n"
 		"Produces signed 16 bit ints, use Sox or aplay to hear them.\n"
@@ -269,6 +269,9 @@ int cic_9_tables[][10] = {
 	{9, -119, -577, 5917, -26067, 77473, -26067, 5917, -577, -119},
 	{9, -199, -362, 5303, -25505, 77489, -25505, 5303, -362, -199},
 };
+
+// Raised cosine in 15 degree steps, sums to 64k, or 1<<16
+int lpassf[6] = {2588, 5000, 7071, 8660, 9659, 10000};
 
 #ifdef _MSC_VER
 double log2(double n)
@@ -359,24 +362,14 @@ void low_pass_real(struct demod_state *s)
 }
 
 void halfsample(int16_t *data, int length)
-/* halve samplerate for one channel of interleaved I/Q data
- * adds less bit noise to weak signals than fifth order
- * adds 3x gain, so use 5 passes or less for 8bit samples */
 {
 	int i;
-	int16_t a,b,c,d;
-	b = data[0];
-	c = data[2];
-	d = data[4];
-	data[0] = (3*b +2*c + d)>>1;
-	for (i = 2; (i*2+6) < length; i+=2) {
-		a = c;
-		b = d;
-		c = data[i*2+2];
-		d = data[i*2+4];
-		data[i] = ((a+d)>>1) + (b+c);
+	int16_t a,b;
+	for (i = 0; (i*2) < (length-2); i+=2) {
+		a = data[i*2 + 0];
+		b = data[i*2 + 2];
+		data[i] = a + b;
 	}
-	data[i] = (c + 2*d  + 3*data[i*2+2])>>1;
 }
 
 void quartersample(int16_t *data, int length)
@@ -390,19 +383,12 @@ void quartersample(int16_t *data, int length)
 	}
 }
 
-void generic_fir(int16_t *data, int length, int *fir, int16_t *hist)
-/* Okay, not at all generic.  Assumes length 9, fix that eventually. */
+void generic_fir(int16_t *data, int length, int *fir, int16_t *hist, int size)
+/* Okay, not at all generic.  Allows length 5 or 9 */
 {
 	int d, temp, sum;
-	for (d=0; d<length; d+=2) {
-		temp = data[d];
-		sum = 0;
-		sum += (hist[0] + hist[8]) * fir[1];
-		sum += (hist[1] + hist[7]) * fir[2];
-		sum += (hist[2] + hist[6]) * fir[3];
-		sum += (hist[3] + hist[5]) * fir[4];
-		sum +=            hist[4]  * fir[5];
-		data[d] = sum >> 15 ;
+	if (size > 6) {
+	    for (d=0; d<length; d+=2) {
 		hist[0] = hist[1];
 		hist[1] = hist[2];
 		hist[2] = hist[3];
@@ -411,7 +397,28 @@ void generic_fir(int16_t *data, int length, int *fir, int16_t *hist)
 		hist[5] = hist[6];
 		hist[6] = hist[7];
 		hist[7] = hist[8];
-		hist[8] = temp;
+		hist[8] = data[d];
+		sum = 0;
+		sum += (hist[0] + hist[8]) * fir[1];
+		sum += (hist[1] + hist[7]) * fir[2];
+		sum += (hist[2] + hist[6]) * fir[3];
+		sum += (hist[3] + hist[5]) * fir[4];
+		sum +=            hist[4]  * fir[5];
+		data[d] = sum >> 16;
+	    }
+	} else {
+	    for (d=0; d<length; d+=2) {
+		hist[0] = hist[1];
+		hist[1] = hist[2];
+		hist[2] = hist[3];
+		hist[3] = hist[4];
+		hist[4] = data[d];
+		sum = 0;
+		sum += (hist[0] + hist[4]) * fir[1];
+		sum += (hist[1] + hist[3]) * fir[3];
+		sum +=            hist[2]  * fir[5];
+		data[d] = sum >> 16;
+	    }
 	}
 }
 
@@ -502,7 +509,7 @@ int polar_disc_lut(int ar, int aj, int br, int bj)
 
 	if (x_abs >= atan_lut_size) {
 		/* we can use linear range, but it is not necessary */
-		return (cj > 0) ? 1<<13 : -1<<13;
+		return (cj > 0) ? 1<<13 : -(1<<13);
 	}
 
 	if (x > 0) {
@@ -572,8 +579,8 @@ void usb_demod(struct demod_state *fm)
 	int16_t *r  = fm->result;
 	int16_t scale = digiboost * fm->output_scale;
 
-	quartersample(fm->lowpassed, fm->lp_len -1);
-	quartersample(fm->lowpassed+1, fm->lp_len-1);
+	quartersample(fm->lowpassed, fm->lp_len);
+	quartersample(fm->lowpassed+1, fm->lp_len);
 	fm->lp_len >>= 2;
 	for (i = 0; i < fm->lp_len; i += 2) {
 		pcm = scale * (lp[i] + lp[i+1]);
@@ -772,20 +779,17 @@ void full_demod(struct demod_state *d)
 	ds_p = d->downsample_passes;
 	if (ds_p) {
 		for (i=0; i < ds_p; i++) {
-			halfsample(d->lowpassed + 0, (d->lp_len >> i) - 1);
-			halfsample(d->lowpassed + 1, (d->lp_len >> i) - 1);
+			halfsample(d->lowpassed + 0, d->lp_len >> i);
+			halfsample(d->lowpassed + 1, d->lp_len >> i);
 		}
 		d->lp_len = d->lp_len >> ds_p;
-		/* droop compensation */
-		if (d->comp_fir_size == 9 && ds_p <= CIC_TABLE_MAX) {
-			generic_fir(d->lowpassed, d->lp_len,
-				cic_9_tables[ds_p], d->droop_i_hist);
-			generic_fir(d->lowpassed+1, d->lp_len-1,
-				cic_9_tables[ds_p], d->droop_q_hist);
-		}
-	} else {
-		low_pass(d);
 	}
+
+	if (d->fir_size) {
+		generic_fir(d->lowpassed, d->lp_len, lpassf, d->droop_i_hist, d->fir_size);
+		generic_fir(d->lowpassed+1, d->lp_len, lpassf, d->droop_q_hist, d->fir_size);
+	}
+
 	/* power squelch */
 	if (d->squelch_level) {
 		sr = rms(d->lowpassed, d->lp_len, 1);
@@ -989,14 +993,14 @@ void dongle_init(struct dongle_state *s)
 
 void demod_init(struct demod_state *s)
 {
-	s->rate_in = 4 * DEFAULT_SAMPLE_RATE;
-	s->rate_out = 4 * DEFAULT_SAMPLE_RATE;
+	s->rate_in = DEFAULT_SAMPLE_RATE;
+	s->rate_out = DEFAULT_SAMPLE_RATE;
 	s->squelch_level = 0;
 	s->conseq_squelch = 10;
 	s->terminate_on_squelch = 0;
 	s->squelch_hits = 11;
 	s->downsample_passes = 1;
-	s->comp_fir_size = 0;
+	s->fir_size = 0;
 	s->prev_index = 0;
 	s->post_downsample = 1;  // once this works, default = 4
 	s->custom_atan = 0;
@@ -1180,8 +1184,7 @@ int main(int argc, char **argv)
 				dongle.offset_tuning = 1;}
 			break;
 		case 'F':
-			demod.downsample_passes = 1;  /* truthy placeholder */
-			demod.comp_fir_size = atoi(optarg);
+			demod.fir_size = atoi(optarg);
 			break;
 		case 'A':
 			if (strcmp("std",  optarg) == 0) {
