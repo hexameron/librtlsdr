@@ -92,7 +92,7 @@ struct tuning_state
 	int freq;
 	int rate;
 	int bin_e;
-	long *avg;  /* length == 2^bin_e */
+	unsigned long *avg;  /* length == 2^bin_e */
 	int samples;
 	int downsample;
 	int downsample_passes;  /* for the recursive filter */
@@ -413,13 +413,13 @@ void rms_power(struct tuning_state *ts)
 	}
 	/* correct for dc offset in squares */
 	dc = (double)t / (double)buf_len;
-	err = t * 2 * dc - dc * dc * buf_len;
+	err = dc * (double)t;
 	p -= (long)round(err);
 
 	if (!peak_hold) {
-		ts->avg[0] += p;
+		ts->avg[0] += (unsigned long)p;
 	} else {
-		ts->avg[0] = MAX(ts->avg[0], p);
+		ts->avg[0] = MAX(ts->avg[0], (unsigned long)p);
 	}
 	ts->samples += 1;
 }
@@ -501,7 +501,7 @@ void frequency_range(char *arg, double crop)
 		ts->crop = crop;
 		ts->downsample = downsample;
 		ts->downsample_passes = downsample_passes;
-		ts->avg = (long*)malloc((1<<bin_e) * sizeof(long));
+		ts->avg = (unsigned long*)malloc((1<<bin_e) * sizeof(long));
 		if (!ts->avg) {
 			fprintf(stderr, "Error: malloc.\n");
 			exit(1);
@@ -700,7 +700,7 @@ void scanner(void)
 				}
 			} else {
 				for (j=0; j<bin_len; j++) {
-					ts->avg[j] = MAX(real_conj(fft_buf[offset+j*2], fft_buf[offset+j*2+1]), ts->avg[j]);
+					ts->avg[j] = MAX((unsigned long)real_conj(fft_buf[offset+j*2], fft_buf[offset+j*2+1]), ts->avg[j]);
 				}
 			}
 			ts->samples += ds;
