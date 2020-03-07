@@ -107,8 +107,8 @@ struct tuning_state
 	//pthread_mutex_t buf_mutex;
 };
 
-/* 3000 is enough for 3GHz b/w worst case */
-#define MAX_TUNES	3000
+/* 50 is enough for 100 MHz b/w */
+#define MAX_TUNES	50
 struct tuning_state tunes[MAX_TUNES];
 int tune_count = 0;
 
@@ -507,7 +507,7 @@ void frequency_range(char *arg, double crop)
 			exit(1);
 		}
 		for (j=0; j<(1<<bin_e); j++) {
-			ts->avg[j] = 0L;
+			ts->avg[j] = 1L;
 		}
 		ts->buf8 = (uint8_t*)malloc(buf_len * sizeof(uint8_t));
 		if (!ts->buf8) {
@@ -625,7 +625,9 @@ void downsample_iq(int16_t *data, int length)
 long real_conj(int16_t real, int16_t imag)
 /* real(n * conj(n)) */
 {
-	return ((long)real*(long)real + (long)imag*(long)imag);
+	// scales 16 bit to 32 bit, so we can gain 4 bits of headroom
+	// for the accumulator and not lose any precision.
+	return ((long)real*(long)real + (long)imag*(long)imag) >> 4;
 }
 
 void scanner(void)
@@ -712,7 +714,7 @@ void csv_dbm(struct tuning_state *ts)
 {
 	int i, len, ds, i1, i2, bw2, bin_count;
 	long tmp;
-	double dbm;
+	double dbm, dbm_rescale;
 	len = 1 << ts->bin_e;
 	ds = ts->downsample;
 	/* fix FFT stuff quirks */
@@ -734,21 +736,24 @@ void csv_dbm(struct tuning_state *ts)
 	// something seems off with the dbm math
 	i1 = 0 + (int)((double)len * ts->crop * 0.5);
 	i2 = (len-1) - (int)((double)len * ts->crop * 0.5);
+        dbm_rescale = 16.0 / (double)ts->rate / (double)ts->samples;
 	for (i=i1; i<=i2; i++) {
 		dbm  = (double)ts->avg[i];
-		dbm /= (double)ts->rate;
-		dbm /= (double)ts->samples;
+		dbm *= dbm_rescale;
 		dbm  = 10 * log10(dbm);
 		fprintf(file, "%.2f, ", dbm);
 	}
-	dbm = (double)ts->avg[i2] / ((double)ts->rate * (double)ts->samples);
+	dbm = (double)ts->avg[i2] * dbm_rescale;
 	if (ts->bin_e == 0) {
-		dbm = ((double)ts->avg[0] / \
-		((double)ts->rate * (double)ts->samples));}
+		dbm = ((double)ts->avg[0] * dbm_rescale);}
 	dbm  = 10 * log10(dbm);
 	fprintf(file, "%.2f\n", dbm);
+
+	// Dynamic range is shifted up 4 bits: -84dB to +12dB
+	// We can hit "zero" at the edges with zero gain
+	// Max gain gives a noise floor around -30dB
 	for (i=0; i<len; i++) {
-		ts->avg[i] = 0L;
+		ts->avg[i] = 1L;
 	}
 	ts->samples = 0;
 }
